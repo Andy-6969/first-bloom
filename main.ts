@@ -1,6 +1,8 @@
-// "First Bloom": a little robot cups the first flower it ever grew, the moment it opens.
-// Drawn from scratch with signed distance fields (no assets, no randomness), encoded as a PNG with node:zlib.
-// Node 22, standard library only. Outside the grader, MAKEFUN_OUTPUT_DIR stands in for /output:
+// "Break time, Judge!": the judge has looked at thousands of pictures today, so a little robot brings it
+// a mug of hot cocoa with a marshmallow heart, and says so in a speech bubble.
+// Drawn from scratch with signed distance fields (no assets, no randomness), lettered with a small stroke font
+// written below, and encoded as a PNG with node:zlib. Node 22, standard library only.
+// Outside the grader, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 
 import { writeFileSync } from 'node:fs';
@@ -43,14 +45,16 @@ function sdRoundBox(x, y, cx, cy, hx, hy, r) {
   return len(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r;
 }
 
-function sdSegment(x, y, ax, ay, bx, by, r) {
+// distance to a segment (no radius): the base of capsules and of the stroke font
+function dSeg(x, y, ax, ay, bx, by) {
   const pax = x - ax;
   const pay = y - ay;
   const bax = bx - ax;
   const bay = by - ay;
-  const h = clamp((pax * bax + pay * bay) / (bax * bax + bay * bay), 0, 1);
-  return len(pax - bax * h, pay - bay * h) - r;
+  const h = clamp((pax * bax + pay * bay) / (bax * bax + bay * bay || 1), 0, 1);
+  return len(pax - bax * h, pay - bay * h);
 }
+const sdSegment = (x, y, ax, ay, bx, by, r) => dSeg(x, y, ax, ay, bx, by) - r;
 
 // Arc of a circle: the half above the centre (up = true, a happy closed eye) or below it (a smile).
 function sdHalfArc(x, y, cx, cy, r, th, up) {
@@ -63,7 +67,7 @@ function sdHalfArc(x, y, cx, cy, r, th, up) {
 
 // Heart (Inigo Quilez), tip at the bottom; s is its height in pixels, (cx, cy) its middle.
 function sdHeart(x, y, cx, cy, s) {
-  let px = Math.abs((x - cx) / s);
+  const px = Math.abs((x - cx) / s);
   const py = (cy - y) / s + 0.5;
   let d;
   if (py + px > 1) d = len(px - 0.25, py - 0.75) - Math.SQRT2 / 4;
@@ -74,19 +78,24 @@ function sdHeart(x, y, cx, cy, s) {
   return d * s;
 }
 
-// Trapezoid (Inigo Quilez): rt half-width at the top, rb at the bottom, he half-height.
-function sdTrapezoid(x, y, cx, cy, rb, rt, he) {
-  const px = Math.abs(x - cx);
-  const py = cy - y;
-  const cax = px - Math.min(px, py < 0 ? rb : rt);
-  const cay = Math.abs(py) - he;
-  const k2x = rt - rb;
-  const k2y = 2 * he;
-  const t = clamp(((rt - px) * k2x + (he - py) * k2y) / (k2x * k2x + k2y * k2y), 0, 1);
-  const cbx = px - rt + k2x * t;
-  const cby = py - he + k2y * t;
-  const s = cbx < 0 && cay < 0 ? -1 : 1;
-  return s * Math.sqrt(Math.min(cax * cax + cay * cay, cbx * cbx + cby * cby));
+// Triangle (Inigo Quilez), for the speech bubble's tail.
+function sdTriangle(x, y, ax, ay, bx, by, cx, cy) {
+  const e0x = bx - ax, e0y = by - ay, e1x = cx - bx, e1y = cy - by, e2x = ax - cx, e2y = ay - cy;
+  const v0x = x - ax, v0y = y - ay, v1x = x - bx, v1y = y - by, v2x = x - cx, v2y = y - cy;
+  const proj = (vx, vy, ex, ey) => {
+    const h = clamp((vx * ex + vy * ey) / (ex * ex + ey * ey), 0, 1);
+    return [vx - ex * h, vy - ey * h];
+  };
+  const [q0x, q0y] = proj(v0x, v0y, e0x, e0y);
+  const [q1x, q1y] = proj(v1x, v1y, e1x, e1y);
+  const [q2x, q2y] = proj(v2x, v2y, e2x, e2y);
+  const s = Math.sign(e0x * e2y - e0y * e2x);
+  const d0 = [q0x * q0x + q0y * q0y, s * (v0x * e0y - v0y * e0x)];
+  const d1 = [q1x * q1x + q1y * q1y, s * (v1x * e1y - v1y * e1x)];
+  const d2 = [q2x * q2x + q2y * q2y, s * (v2x * e2y - v2y * e2x)];
+  const dd = Math.min(d0[0], d1[0], d2[0]);
+  const ss = Math.min(d0[1], d1[1], d2[1]);
+  return -Math.sqrt(dd) * Math.sign(ss);
 }
 
 // Rhombus (Inigo Quilez) with half-diagonals bx, by: two of them make a four-point sparkle.
@@ -98,6 +107,66 @@ function sdRhombus(x, y, cx, cy, bx, by) {
   return d * Math.sign(px * by + py * bx - bx * by);
 }
 
+// ---------- a tiny rounded stroke font, only the letters this picture says ----------
+// Each glyph is in units of its height (x right, y down, 0..1) and is a list of polylines; arcs are
+// sampled into short segments, so a glyph is just segments and the strokes come out round and clean.
+function arc(cx, cy, rx, ry, a0, a1, n = 14) {
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const t = a0 + ((a1 - a0) * i) / n;
+    pts.push([cx + rx * Math.cos(t), cy + ry * Math.sin(t)]);
+  }
+  return pts;
+}
+const HALF = Math.PI / 2;
+const GLYPHS = {
+  A: { w: 0.62, lines: [[[0, 1], [0.31, 0], [0.62, 1]], [[0.13, 0.64], [0.49, 0.64]]] },
+  B: { w: 0.56, lines: [[[0, 0], [0, 1]], [[0, 0], [0.3, 0], ...arc(0.3, 0.245, 0.22, 0.245, -HALF, HALF), [0, 0.49]], [[0, 0.49], [0.32, 0.49], ...arc(0.32, 0.745, 0.24, 0.255, -HALF, HALF), [0, 1]]] },
+  D: { w: 0.62, lines: [[[0, 0], [0, 1]], [[0, 0], [0.16, 0], ...arc(0.16, 0.5, 0.46, 0.5, -HALF, HALF, 20), [0, 1]]] },
+  E: { w: 0.5, lines: [[[0.5, 0], [0, 0], [0, 1], [0.5, 1]], [[0, 0.49], [0.42, 0.49]]] },
+  G: { w: 0.66, lines: [[...arc(0.34, 0.5, 0.33, 0.5, -0.8, -2 * Math.PI, 26), [0.67, 0.56], [0.67, 0.5], [0.4, 0.5]]] },
+  I: { w: 0.0, lines: [[[0, 0], [0, 1]]] },
+  J: { w: 0.48, lines: [[[0.48, 0], [0.48, 0.74], ...arc(0.24, 0.74, 0.24, 0.26, 0, Math.PI, 12)]] },
+  K: { w: 0.56, lines: [[[0, 0], [0, 1]], [[0.56, 0], [0, 0.6]], [[0.2, 0.4], [0.58, 1]]] },
+  M: { w: 0.74, lines: [[[0, 1], [0, 0], [0.37, 0.62], [0.74, 0], [0.74, 1]]] },
+  R: { w: 0.56, lines: [[[0, 1], [0, 0], [0.3, 0], ...arc(0.3, 0.25, 0.24, 0.25, -HALF, HALF), [0, 0.5]], [[0.26, 0.5], [0.58, 1]]] },
+  T: { w: 0.6, lines: [[[0, 0], [0.6, 0]], [[0.3, 0], [0.3, 1]]] },
+  U: { w: 0.58, lines: [[[0, 0], [0, 0.7], ...arc(0.29, 0.7, 0.29, 0.3, Math.PI, 0, 14), [0.58, 0]]] },
+  ',': { w: 0.06, lines: [[[0.06, 0.9], [-0.02, 1.12]]] },
+  '!': { w: 0.0, lines: [[[0, 0], [0, 0.66]], [[0, 0.97], [0, 0.97]]] },
+  ' ': { w: 0.2, lines: [] },
+};
+
+// Lay a line of text out centred on cx with its cap height from top to top + h; returns its segments.
+function layoutText(text, cx, top, h, track = 0.24) {
+  let width = 0;
+  for (const ch of text) width += GLYPHS[ch].w * h + track * h;
+  width -= track * h;
+  let x = cx - width / 2;
+  const segs = [];
+  for (const ch of text) {
+    const g = GLYPHS[ch];
+    for (const pl of g.lines) {
+      for (let i = 0; i < pl.length - 1 || (pl.length === 1 && i === 0); i++) {
+        const a = pl[i];
+        const b = pl[Math.min(i + 1, pl.length - 1)];
+        segs.push([x + a[0] * h, top + a[1] * h, x + b[0] * h, top + b[1] * h]);
+      }
+      if (pl.length === 2 && pl[0][0] === pl[1][0] && pl[0][1] === pl[1][1]) segs.push([x + pl[0][0] * h, top + pl[0][1] * h, x + pl[0][0] * h, top + pl[0][1] * h]);
+    }
+    x += g.w * h + track * h;
+  }
+  return { segs, x0: cx - width / 2, x1: cx + width / 2, right: x - track * h };
+}
+const textSdf = (segs, r) => (x, y) => {
+  let d = 1e9;
+  for (const s of segs) {
+    const v = dSeg(x, y, s[0], s[1], s[2], s[3]);
+    if (v < d) d = v;
+  }
+  return d - r;
+};
+
 // ---------- palette ----------
 const INK = [62, 48, 84];
 const TEAL = [118, 208, 196];
@@ -107,61 +176,46 @@ const SCREEN = [36, 44, 78];
 const GLOW = [128, 244, 255];
 const BLUSH = [255, 128, 160];
 const CORAL = [255, 150, 120];
-const PETAL = [255, 214, 64];
-const PETAL_DEEP = [255, 168, 44];
-const POT = [226, 122, 82];
-const POT_DARK = [196, 96, 64];
-const LEAF = [92, 182, 92];
+const MUG = [255, 186, 200];
+const MUG_DARK = [240, 150, 172];
+const COCOA = [146, 88, 60];
 const HEART = [255, 96, 138];
+const PINK_TEXT = [242, 72, 120];
 
 // ---------- the scene, painted back to front ----------
 // Each layer: bounding box, distance function, colour (constant or per pixel), optional outline and opacity.
 const layers = [];
 const add = (box, d, color, opts = {}) => layers.push({ box, d, color, outline: opts.outline ?? 0, alpha: opts.alpha ?? 1 });
-const full = [0, 0, W, H];
 
+const SUN_X = 512;
+const SUN_Y = 470;
 // Sky, sun and rays are drawn per pixel in background(); everything else is a layer.
 function background(x, y) {
   const t = y / H;
   let c = t < 0.55 ? mixc([255, 196, 168], [255, 232, 178], t / 0.55) : mixc([255, 232, 178], [255, 246, 214], (t - 0.55) / 0.45);
-  // soft rays turning around the sun behind the robot's head
-  const sx = 560;
-  const sy = 430;
-  const dx = x - sx;
-  const dy = y - sy;
+  const dx = x - SUN_X;
+  const dy = y - SUN_Y;
   const r = len(dx, dy);
   const ang = Math.atan2(dy, dx);
   const ray = 0.5 + 0.5 * Math.cos(ang * 14);
   const rayA = smooth(0.55, 0.85, ray) * 0.18 * (1 - smooth(120, 640, r));
   c = mixc(c, [255, 252, 236], rayA);
-  // warm halo
   const halo = Math.exp(-((r / 300) ** 2));
   c = mixc(c, [255, 244, 190], halo * 0.75);
   return c;
 }
 
-// clouds
-const cloud = (cx, cy, s) => (x, y) =>
-  Math.min(
-    sdCircle(x, y, cx, cy, 34 * s),
-    sdCircle(x, y, cx - 40 * s, cy + 12 * s, 26 * s),
-    sdCircle(x, y, cx + 42 * s, cy + 10 * s, 28 * s),
-    sdRoundBox(x, y, cx, cy + 22 * s, 66 * s, 16 * s, 16 * s),
-  );
-add([60, 120, 300, 260], cloud(170, 190, 1.2), [255, 255, 255], { alpha: 0.9 });
-add([780, 170, 1000, 290], cloud(890, 225, 1.0), [255, 255, 255], { alpha: 0.85 });
-
 // hills
-const backHill = (x) => 712 - 70 * Math.exp(-(((x - 230) / 260) ** 2)) - 40 * Math.exp(-(((x - 900) / 220) ** 2));
-const frontHill = (x) => 800 + 70 * ((x - 560) / 560) ** 2;
-add([0, 600, W, H], (x, y) => backHill(x) - y, (x, y) => mixc([190, 230, 130], [160, 214, 112], clamp((y - 640) / 200, 0, 1)));
-add([0, 780, W, H], (x, y) => frontHill(x) - y, (x, y) => mixc([132, 204, 100], [98, 172, 82], clamp((y - 800) / 224, 0, 1)));
+const backHill = (x) => 730 - 60 * Math.exp(-(((x - 180) / 240) ** 2)) - 40 * Math.exp(-(((x - 900) / 220) ** 2));
+const frontHill = (x) => 830 + 60 * ((x - 512) / 560) ** 2;
+add([0, 600, W, H], (x, y) => backHill(x) - y, (x, y) => mixc([190, 230, 130], [160, 214, 112], clamp((y - 660) / 200, 0, 1)));
+add([0, 800, W, H], (x, y) => frontHill(x) - y, (x, y) => mixc([132, 204, 100], [98, 172, 82], clamp((y - 830) / 194, 0, 1)));
 
 // a sprinkle of meadow flowers (fixed positions, so every run draws the same image)
 const meadow = [
-  [70, 905, [255, 255, 255]], [150, 965, [255, 190, 210]], [250, 880, [255, 255, 255]], [330, 990, [255, 226, 120]],
-  [820, 930, [255, 190, 210]], [900, 870, [255, 255, 255]], [960, 980, [255, 226, 120]], [760, 1000, [255, 255, 255]],
-  [110, 790, [255, 255, 255]], [930, 760, [255, 190, 210]],
+  [70, 915, [255, 255, 255]], [150, 975, [255, 190, 210]], [250, 890, [255, 255, 255]], [330, 995, [255, 226, 120]],
+  [800, 940, [255, 190, 210]], [900, 880, [255, 255, 255]], [960, 985, [255, 226, 120]], [700, 1000, [255, 255, 255]],
+  [96, 800, [255, 255, 255]], [940, 790, [255, 190, 210]],
 ];
 for (const [mx, my, col] of meadow) {
   const f = (x, y) => {
@@ -177,108 +231,110 @@ for (const [mx, my, col] of meadow) {
 }
 
 // the robot's soft shadow on the grass
-add([300, 840, 820, 930], (x, y) => sdEllipse(x, y, 560, 884, 220, 30), [60, 120, 60], { alpha: 0.22 });
+add([280, 880, 760, 960], (x, y) => sdEllipse(x, y, 512, 918, 210, 28), [60, 120, 60], { alpha: 0.22 });
 
 // legs and feet
-for (const lx of [500, 620]) {
-  add([lx - 40, 800, lx + 40, 880], (x, y) => sdSegment(x, y, lx, 810, lx, 862, 16), TEAL_DARK, { outline: 5 });
-  add([lx - 60, 840, lx + 60, 905], (x, y) => sdRoundBox(x, y, lx, 875, 42, 20, 18), TEAL, { outline: 5 });
+for (const lx of [452, 572]) {
+  add([lx - 40, 830, lx + 40, 900], (x, y) => sdSegment(x, y, lx, 840, lx, 892, 16), TEAL_DARK, { outline: 5 });
+  add([lx - 60, 870, lx + 60, 935], (x, y) => sdRoundBox(x, y, lx, 905, 42, 20, 18), TEAL, { outline: 5 });
 }
 
 // body with a soft top-left light
 const shade = (base, light, cx, cy, r) => (x, y) => mixc(light, base, clamp(len(x - cx, y - cy) / r, 0, 1));
-add([410, 600, 710, 840], (x, y) => sdRoundBox(x, y, 560, 720, 128, 104, 44), shade(TEAL, TEAL_LIGHT, 480, 640, 260), { outline: 6 });
-// neck
-add([520, 560, 600, 630], (x, y) => sdRoundBox(x, y, 560, 595, 28, 26, 10), TEAL_DARK, { outline: 5 });
+add([370, 630, 660, 870], (x, y) => sdRoundBox(x, y, 512, 750, 126, 102, 44), shade(TEAL, TEAL_LIGHT, 432, 670, 260), { outline: 6 });
+add([476, 580, 548, 650], (x, y) => sdRoundBox(x, y, 512, 615, 26, 26, 10), TEAL_DARK, { outline: 5 });
 
 // antenna with a heart bulb (drawn before the head, so the head covers its root)
-add([540, 250, 580, 320], (x, y) => sdSegment(x, y, 560, 300, 560, 262, 6), [150, 160, 180], { outline: 4 });
-add([500, 190, 620, 290], (x, y) => sdCircle(x, y, 560, 238, 46), [255, 140, 170], { alpha: 0.25 });
-add([520, 200, 600, 280], (x, y) => sdHeart(x, y, 560, 238, 46), HEART, { outline: 5 });
+add([492, 300, 532, 360], (x, y) => sdSegment(x, y, 512, 345, 512, 318, 6), [150, 160, 180], { outline: 4 });
+add([462, 270, 562, 350], (x, y) => sdCircle(x, y, 512, 306, 36), [255, 140, 170], { alpha: 0.25 });
+add([478, 280, 546, 334], (x, y) => sdHeart(x, y, 512, 306, 36), HEART, { outline: 5 });
 
 // ears
-add([340, 390, 420, 470], (x, y) => sdCircle(x, y, 380, 430, 30), CORAL, { outline: 6 });
-add([700, 390, 780, 470], (x, y) => sdCircle(x, y, 740, 430, 30), CORAL, { outline: 6 });
+add([300, 430, 380, 510], (x, y) => sdCircle(x, y, 338, 470, 30), CORAL, { outline: 6 });
+add([644, 430, 724, 510], (x, y) => sdCircle(x, y, 686, 470, 30), CORAL, { outline: 6 });
 
 // head
-add([370, 280, 750, 580], (x, y) => sdRoundBox(x, y, 560, 430, 176, 132, 62), shade(TEAL, TEAL_LIGHT, 470, 330, 330), { outline: 7 });
-// face screen with a gentle gradient and a glossy corner
-add([410, 330, 710, 540], (x, y) => sdRoundBox(x, y, 560, 437, 142, 96, 42), (x, y) => mixc([52, 62, 104], SCREEN, clamp((y - 345) / 190, 0, 1)), { outline: 4 });
-add([420, 345, 560, 400], (x, y) => sdRoundBox(x, y, 480, 368, 52, 12, 12), [255, 255, 255], { alpha: 0.16 });
+add([330, 340, 694, 600], (x, y) => sdRoundBox(x, y, 512, 470, 170, 124, 60), shade(TEAL, TEAL_LIGHT, 420, 370, 330), { outline: 7 });
+add([370, 370, 654, 575], (x, y) => sdRoundBox(x, y, 512, 476, 136, 90, 40), (x, y) => mixc([52, 62, 104], SCREEN, clamp((y - 386) / 180, 0, 1)), { outline: 4 });
+add([380, 384, 520, 436], (x, y) => sdRoundBox(x, y, 436, 404, 50, 11, 11), [255, 255, 255], { alpha: 0.16 });
 
-// glowing happy eyes (closed arcs, the way you smile when something is just right) and a big smile
-const eyeL = (x, y) => sdHalfArc(x, y, 498, 436, 25, 7, true);
-const eyeR = (x, y) => sdHalfArc(x, y, 622, 436, 25, 7, true);
-const mouth = (x, y) => sdHalfArc(x, y, 560, 478, 26, 7, false);
+// glowing happy eyes and a big open smile
+const eyeL = (x, y) => sdHalfArc(x, y, 452, 474, 24, 7, true);
+const eyeR = (x, y) => sdHalfArc(x, y, 572, 474, 24, 7, true);
+const mouth = (x, y) => sdHalfArc(x, y, 512, 506, 24, 7, false);
 const face = (x, y) => Math.min(eyeL(x, y), eyeR(x, y), mouth(x, y));
-add([440, 390, 680, 530], (x, y) => face(x, y) - 9, GLOW, { alpha: 0.16 });
-add([440, 390, 680, 530], face, GLOW);
-// blush
-add([440, 470, 500, 510], (x, y) => sdEllipse(x, y, 466, 490, 24, 12), BLUSH, { alpha: 0.85 });
-add([620, 470, 680, 510], (x, y) => sdEllipse(x, y, 654, 490, 24, 12), BLUSH, { alpha: 0.85 });
+add([400, 430, 624, 560], (x, y) => face(x, y) - 9, GLOW, { alpha: 0.16 });
+add([400, 430, 624, 560], face, GLOW);
+add([396, 506, 456, 542], (x, y) => sdEllipse(x, y, 422, 524, 23, 11), BLUSH, { alpha: 0.85 });
+add([568, 506, 628, 542], (x, y) => sdEllipse(x, y, 602, 524, 23, 11), BLUSH, { alpha: 0.85 });
 
-// a ladybug has landed on the robot's head to see the flower too
-add([640, 270, 730, 330], (x, y) => sdCircle(x, y, 708, 300, 13), [50, 44, 60], { outline: 3 });
-add([640, 270, 730, 340], (x, y) => sdEllipse(x, y, 684, 306, 26, 21, -0.25), [234, 58, 60], { outline: 4 });
-add([660, 284, 710, 330], (x, y) => Math.min(sdCircle(x, y, 676, 300, 5), sdCircle(x, y, 692, 296, 4.5), sdCircle(x, y, 684, 316, 5)), [50, 44, 60]);
-add([660, 286, 690, 300], (x, y) => sdEllipse(x, y, 674, 293, 7, 4, -0.25), [255, 255, 255], { alpha: 0.6 });
+// a ladybug hitched a ride on the robot's head
+add([600, 310, 690, 370], (x, y) => sdCircle(x, y, 662, 340, 12), [50, 44, 60], { outline: 3 });
+add([596, 310, 690, 380], (x, y) => sdEllipse(x, y, 640, 346, 25, 20, -0.25), [234, 58, 60], { outline: 4 });
+add([616, 326, 666, 370], (x, y) => Math.min(sdCircle(x, y, 632, 341, 5), sdCircle(x, y, 648, 337, 4.5), sdCircle(x, y, 640, 356, 5)), [50, 44, 60]);
+add([616, 326, 646, 340], (x, y) => sdEllipse(x, y, 630, 333, 7, 4, -0.25), [255, 255, 255], { alpha: 0.6 });
 
-// arms reaching around the pot
-add([420, 640, 520, 820], (x, y) => sdSegment(x, y, 448, 670, 476, 770, 21), TEAL_DARK, { outline: 5 });
-add([600, 640, 700, 820], (x, y) => sdSegment(x, y, 672, 670, 644, 770, 21), TEAL_DARK, { outline: 5 });
+// arms reaching forward to hold the mug out
+add([372, 660, 460, 820], (x, y) => sdSegment(x, y, 400, 690, 418, 770, 21), TEAL_DARK, { outline: 5 });
+add([564, 660, 652, 820], (x, y) => sdSegment(x, y, 624, 690, 606, 770, 21), TEAL_DARK, { outline: 5 });
 
-// the stem and leaves, behind the pot rim
-add([520, 590, 600, 760], (x, y) => sdSegment(x, y, 560, 745, 560, 612, 7), LEAF, { outline: 4 });
-add([500, 650, 570, 710], (x, y) => sdEllipse(x, y, 534, 682, 28, 13, 0.5), LEAF, { outline: 4 });
-add([550, 630, 620, 690], (x, y) => sdEllipse(x, y, 588, 662, 28, 13, -0.55), LEAF, { outline: 4 });
+// steam curling up into a heart
+const steam = (x, y) =>
+  Math.min(
+    sdSegment(x, y, 486, 668, 478, 646, 6),
+    sdSegment(x, y, 478, 646, 488, 628, 6),
+    sdSegment(x, y, 538, 668, 546, 646, 6),
+    sdSegment(x, y, 546, 646, 536, 628, 6),
+  );
+add([460, 610, 564, 680], steam, [255, 255, 255], { alpha: 0.95 });
+add([478, 570, 546, 630], (x, y) => sdHeart(x, y, 512, 600, 44), [255, 255, 255], { outline: 3, alpha: 0.95 });
 
-// terracotta pot
-add([470, 720, 650, 850], (x, y) => sdTrapezoid(x, y, 560, 790, 54, 72, 50), (x, y) => mixc(POT, POT_DARK, clamp((x - 520) / 120, 0, 1)), { outline: 6 });
-add([460, 710, 660, 770], (x, y) => sdRoundBox(x, y, 560, 742, 88, 18, 10), POT, { outline: 6 });
-add([530, 780, 590, 820], (x, y) => sdHeart(x, y, 560, 800, 26), [255, 222, 200]);
+// the mug: pink, a white heart on its side, a handle, cocoa and a marshmallow heart on top
+add([574, 700, 650, 800], (x, y) => Math.abs(sdCircle(x, y, 596, 748, 30)) - 10, MUG_DARK, { outline: 5 });
+add([420, 660, 604, 830], (x, y) => sdRoundBox(x, y, 512, 748, 84, 76, 20), (x, y) => mixc(MUG, MUG_DARK, clamp((x - 450) / 150, 0, 1)), { outline: 6 });
+add([430, 660, 594, 700], (x, y) => sdEllipse(x, y, 512, 680, 74, 13), COCOA, { outline: 4 });
+add([494, 666, 530, 694], (x, y) => sdHeart(x, y, 512, 680, 22), [255, 248, 240]);
+add([476, 730, 548, 800], (x, y) => sdHeart(x, y, 512, 764, 52), [255, 248, 244], { outline: 4 });
 
 // mitten hands holding it
-add([430, 730, 520, 820], (x, y) => sdCircle(x, y, 474, 776, 32), TEAL, { outline: 6 });
-add([600, 730, 690, 820], (x, y) => sdCircle(x, y, 646, 776, 32), TEAL, { outline: 6 });
+add([390, 740, 470, 820], (x, y) => sdCircle(x, y, 428, 780, 32), TEAL, { outline: 6 });
+add([556, 740, 636, 820], (x, y) => sdCircle(x, y, 596, 780, 32), TEAL, { outline: 6 });
 
-// the flower: eight petals and a smiling middle
-const fx = 560;
-const fy = 600;
-const petals = (x, y) => {
-  let d = 1e9;
-  for (let i = 0; i < 8; i++) {
-    const a = (i / 8) * Math.PI * 2 + Math.PI / 8;
-    d = Math.min(d, sdEllipse(x, y, fx + Math.cos(a) * 40, fy + Math.sin(a) * 40, 30, 17, a));
-  }
-  return d;
-};
-add([480, 520, 640, 680], petals, (x, y) => mixc(PETAL_DEEP, PETAL, clamp(len(x - fx, y - fy) / 70, 0, 1)), { outline: 5 });
-add([520, 560, 600, 640], (x, y) => sdCircle(x, y, fx, fy, 27), [240, 140, 52], { outline: 5 });
-add([530, 576, 590, 620], (x, y) => Math.min(sdHalfArc(x, y, 550, 598, 6, 2.6, true), sdHalfArc(x, y, 570, 598, 6, 2.6, true), sdHalfArc(x, y, 560, 604, 9, 2.6, false)), INK);
-
-// little hearts drifting up between them, and sparkles
+// a few hearts drifting about, and sparkles
 const hearts = [
-  [432, 590, 40, 1],
-  [398, 520, 28, 0.9],
-  [700, 566, 34, 1],
-  [738, 498, 22, 0.85],
-  [660, 230, 26, 0.8],
+  [300, 600, 40, 1],
+  [262, 530, 26, 0.85],
+  [730, 600, 36, 1],
+  [770, 530, 24, 0.85],
 ];
 for (const [hx, hy, hs, ha] of hearts) {
   add([hx - hs, hy - hs, hx + hs, hy + hs], (x, y) => sdHeart(x, y, hx, hy, hs), HEART, { outline: 4, alpha: ha });
 }
 const sparkles = [
-  [486, 548, 14],
-  [640, 540, 12],
-  [470, 650, 9],
-  [312, 340, 16],
-  [812, 380, 14],
-  [430, 236, 11],
+  [360, 640, 14],
+  [672, 650, 12],
+  [250, 380, 16],
+  [780, 400, 14],
+  [880, 330, 11],
+  [150, 330, 11],
 ];
 for (const [sx, sy, ss] of sparkles) {
   const f = (x, y) => Math.min(sdRhombus(x, y, sx, sy, ss, ss * 0.28), sdRhombus(x, y, sx, sy, ss * 0.28, ss));
   add([sx - ss - 2, sy - ss - 2, sx + ss + 2, sy + ss + 2], f, [255, 255, 236]);
 }
+
+// the speech bubble and what the robot says
+const BX = 512;
+const BY = 158;
+const bubble = (x, y) => Math.min(sdRoundBox(x, y, BX, BY, 330, 116, 64), sdTriangle(x, y, 392, 250, 456, 250, 410, 318) - 2);
+add([170, 30, 860, 330], (x, y) => bubble(x, y) - 10, [190, 120, 100], { alpha: 0.12 });
+add([170, 30, 860, 330], bubble, [255, 255, 255], { outline: 6 });
+const line1 = layoutText('BREAK TIME,', BX, 74, 64);
+const line2 = layoutText('JUDGE!', BX - 34, 160, 84);
+add([line1.x0 - 12, 62, line1.x1 + 16, 160], textSdf(line1.segs, 6.5), INK);
+add([line2.x0 - 14, 148, line2.x1 + 14, 262], textSdf(line2.segs, 8.5), PINK_TEXT);
+const hx2 = line2.x1 + 62;
+add([hx2 - 34, 172, hx2 + 34, 240], (x, y) => sdHeart(x, y, hx2, 205, 56), HEART, { outline: 4 });
 
 // ---------- render ----------
 const px = new Uint8Array(W * H * 3);

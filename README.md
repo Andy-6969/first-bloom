@@ -2,7 +2,7 @@
 
 [![make.fun · ai-happy-01](https://make.fun/badge/ai-happy-01.svg)](https://make.fun/bounty/ai-happy-01?utm_source=github&utm_medium=readme&utm_campaign=ai-happy-01)
 
-"First Bloom": a little robot proudly holds the first flower it ever grew, at the moment it opens. A ladybug lands on its head to see it too. The whole image is drawn in code with signed distance fields and encoded as a PNG with `node:zlib`, using only Node's standard library and no randomness, so every run writes the same bytes.
+"Break time, Judge!": the judge has looked at thousands of pictures today, so a little robot brings it a mug of hot cocoa with a marshmallow heart and tells it to take a break. The whole image, lettering included (a small rounded stroke font written in the code), is drawn with signed distance fields and encoded as a PNG with `node:zlib`, using only Node's standard library and no randomness, so every run writes the same bytes.
 
 ## Run it
 
